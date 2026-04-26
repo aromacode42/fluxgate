@@ -1,0 +1,107 @@
+server:
+  host: "127.0.0.1"
+  port: 8080
+  read_timeout: 30s
+  write_timeout: 600s
+  shutdown_timeout: 10s
+
+# ── 代理列表 ──
+proxies:
+  - name: "us-proxy"
+    type: "http"
+    address: "http://127.0.0.1:7890"
+
+  - name: "jp-socks"
+    type: "socks5"
+    address: "127.0.0.1:1080"
+    username: ""
+    password: ""
+
+  - name: "hk-proxy"
+    type: "http"
+    address: "http://proxy.hk:8080"
+
+# ── 服务提供者 ──
+providers:
+  - name: "openai-us"
+    type: "openai"
+    base_url: "https://api.openai.com"
+    api_keys:
+      - "sk-xxxxxxxxxxxxxxxx"
+      - "sk-yyyyyyyyyyyyyyyy"
+    proxy: "us-proxy"
+    models:
+      - "gpt-4o"
+      - "gpt-4o-mini"
+      - "o1-pro"
+    weight: 2
+
+  - name: "openai-backup"
+    type: "openai"
+    base_url: "https://api.example.com"
+    api_keys:
+      - "sk-zzzzzzzzzzzzzzzz"
+    proxy: "hk-proxy"
+    models:
+      - "gpt-4o"
+      - "gpt-4o-mini"
+    weight: 1
+
+  - name: "anthropic-jp"
+    type: "anthropic"
+    base_url: "https://api.anthropic.com"
+    api_keys:
+      - "sk-ant-aaaaaaaaaaaaa"
+    proxy: "jp-socks"
+    models:
+      - "claude-sonnet-4-20250514"
+      - "claude-3-5-haiku-20241022"
+    weight: 1
+
+  - name: "openai-direct"
+    type: "openai"
+    base_url: "https://api.openai.com"
+    api_keys:
+      - "sk-direct-key-here"
+    # models 留空 = 接受任何模型（直连兜底）
+
+# ── 模型路由表 ──
+# name: 对外暴露的虚拟模型名
+# backends: 按优先级排列，格式 "provider-name/real-model"
+# 前一个失败自动切换下一个，全部失败才报错
+#
+# 入站支持两种格式：
+#   OpenAI:    POST /v1/chat/completions  (标准 OpenAI 格式)
+#   Anthropic: POST /v1/messages          (标准 Anthropic 格式)
+#
+# 当入站格式与后端格式不同时，自动翻译请求和 SSE 响应
+# 同格式时直接透传，零开销
+models:
+  - name: "gpt-5"
+    backends:
+      - "openai-us/gpt-4o"
+      - "openai-backup/gpt-4o"
+      - "anthropic-jp/claude-sonnet-4-20250514"
+
+  - name: "fast-chat"
+    backends:
+      - "openai-us/gpt-4o-mini"
+      - "openai-backup/gpt-4o-mini"
+
+  - name: "heavy-reasoning"
+    backends:
+      - "openai-us/o1-pro"
+
+gateway:
+  # api_keys:                    # Uncomment to enable inbound auth
+  #   - "your-secret-key-1"      # Supports both Bearer and x-api-key headers
+  #   - "your-secret-key-2"
+  balancer_type: "round_robin"
+  retry_max: 5                  # Backend-level retries
+  retry_wait_min: 500ms
+  retry_wait_max: 5s
+  gateway_retry_max: 0          # Gateway-level retries (0 = infinite, keeps retrying while client is connected)
+  health_check: true
+  health_interval: 30s
+  health_timeout: 5s
+  request_timeout: 300s         # Per-backend timeout (AI models can be slow)

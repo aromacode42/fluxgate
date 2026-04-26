@@ -1,0 +1,71 @@
+# =========================
+# Go build artifacts
+# =========================
+/bin/
+/build/
+/dist/
+
+# 可执行文件（Linux / macOS）
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+fluxgate
+
+# Go test binary
+*.test
+
+# 覆盖率
+*.out
+coverage.out
+
+# =========================
+# Go cache / modules
+# =========================
+go.work
+go.work.sum
+
+# vendor（如果你不用 vendor）
+/vendor/
+
+# =========================
+# IDE / Editor
+# =========================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# =========================
+# Logs
+# =========================
+*.log
+
+# =========================
+# Env / local config
+# =========================
+.env
+.env.*
+config.local.yaml
+my-config.yml
+
+# =========================
+# AI / 自动生成文档
+# =========================
+CLAUDE.md
+GPT.md
+AI.md
+*.ai.md
+*.gen.md
+
+# 如果你以后用 Copilot / ChatGPT 输出文档
+*_generated.md
+*_ai.md
+
+# =========================
+# OS files
+# =========================
+.DS_Store
+Thumbs.db

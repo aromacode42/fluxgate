@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__plugin_github_github__get_me",
+      "Bash(git init *)",
+      "Bash(git config *)"
+    ]
+  }
+}
