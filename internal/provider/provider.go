@@ -62,12 +62,33 @@ func (p *Provider) CheckHealth(ctx context.Context, timeout time.Duration) error
 	if err != nil {
 		return fmt.Errorf("creating health check request: %w", err)
 	}
+
+	key := p.NextKey()
+	if p.Type == "anthropic" {
+		req.Header.Set("x-api-key", key)
+		req.Header.Set("anthropic-version", "2023-06-01")
+	} else {
+		req.Header.Set("Authorization", "Bearer "+key)
+	}
+
 	resp, err := client.Do(req)
 	if err != nil {
 		p.SetHealthy(false)
 		return fmt.Errorf("health check failed: %w", err)
 	}
 	defer resp.Body.Close()
+
+	// If unauthorized and anthropic-type, retry with Bearer auth
+	if resp.StatusCode == http.StatusUnauthorized && p.Type == "anthropic" {
+		req.Header.Set("Authorization", "Bearer "+key)
+		req.Header.Del("x-api-key")
+		resp, err = client.Do(req)
+		if err != nil {
+			p.SetHealthy(false)
+			return fmt.Errorf("health check failed: %w", err)
+		}
+		defer resp.Body.Close()
+	}
 
 	if resp.StatusCode >= 500 {
 		p.SetHealthy(false)

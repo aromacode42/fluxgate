@@ -396,9 +396,6 @@ func (g *Gateway) sendToProvider(
 		}
 	}
 
-	key := p.NextKey()
-	g.setAuthHeader(req, p, key)
-
 	// Ensure correct Content-Type
 	req.Header.Set("Content-Type", "application/json")
 
@@ -407,7 +404,28 @@ func (g *Gateway) sendToProvider(
 		"proxy", p.ProxyName,
 		"target", targetURL)
 
-	return client.Do(req)
+	return g.doRequestWithAuthFallback(ctx, client, req, body, p)
+}
+
+func (g *Gateway) doRequestWithAuthFallback(ctx context.Context, client *http.Client, req *http.Request, body []byte, p *provider.Provider) (*http.Response, error) {
+	key := p.NextKey()
+
+	// First attempt with provider-type default auth
+	g.setAuthHeader(req, p, key)
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+
+	// If unauthorized and provider is anthropic-type, retry with Bearer auth
+	// This handles providers like Longcat that expect Bearer instead of x-api-key
+	if resp.StatusCode == http.StatusUnauthorized && p.Type == "anthropic" {
+		resp.Body.Close()
+		req.Header.Set("Authorization", "Bearer "+key)
+		return client.Do(req)
+	}
+
+	return resp, nil
 }
 
 func (g *Gateway) translateRequest(body []byte, from, to string) ([]byte, error) {
