@@ -4,10 +4,27 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 )
+
+// DetectProviderType auto-detects the provider type from the base URL.
+func DetectProviderType(baseURL string) string {
+	baseURL = strings.ToLower(baseURL)
+	if strings.Contains(baseURL, "anthropic") {
+		return "anthropic"
+	}
+	if strings.Contains(baseURL, "gemini") || strings.Contains(baseURL, "generativelanguage") || strings.Contains(baseURL, "googleapis") {
+		return "gemini"
+	}
+	if strings.Contains(baseURL, "openai") || strings.Contains(baseURL, "openai.com") {
+		return "openai"
+	}
+	// Default to openai for unknown URLs (most compatible)
+	return "openai"
+}
 
 type Provider struct {
 	Name      string
@@ -55,8 +72,8 @@ func (p *Provider) SetHealthy(h bool) {
 	p.healthy.Store(h)
 }
 
-func (p *Provider) CheckHealth(ctx context.Context, timeout time.Duration) error {
-	client := &http.Client{Timeout: timeout}
+func (p *Provider) CheckHealth(ctx context.Context, timeout time.Duration, transport *http.Transport) error {
+	client := &http.Client{Timeout: timeout, Transport: transport}
 	url := p.HealthURL()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -105,6 +122,8 @@ func (p *Provider) HealthURL() string {
 		return p.BaseURL + "/models"
 	case "anthropic":
 		return p.BaseURL + "/v1/models"
+	case "gemini":
+		return p.BaseURL + "/v1beta/models"
 	default:
 		return p.BaseURL
 	}

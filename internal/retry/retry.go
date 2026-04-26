@@ -9,9 +9,10 @@ import (
 )
 
 type Config struct {
-	Max     int
-	WaitMin time.Duration
-	WaitMax time.Duration
+	Max              int
+	WaitMin          time.Duration
+	WaitMax          time.Duration
+	MaxErrorAttempts int // Max consecutive network errors before giving up (default 3)
 }
 
 type Retryer struct {
@@ -20,6 +21,9 @@ type Retryer struct {
 }
 
 func New(cfg Config) *Retryer {
+	if cfg.MaxErrorAttempts <= 0 {
+		cfg.MaxErrorAttempts = 3
+	}
 	return &Retryer{
 		cfg: cfg,
 		rng: rand.New(rand.NewSource(time.Now().UnixNano())),
@@ -29,6 +33,7 @@ func New(cfg Config) *Retryer {
 func (r *Retryer) Do(ctx context.Context, fn func() (*http.Response, error)) (*http.Response, error) {
 	var lastErr error
 	var resp *http.Response
+	consecutiveErrors := 0
 
 	for attempt := 0; attempt <= r.cfg.Max; attempt++ {
 		// Check context before every attempt
@@ -47,7 +52,16 @@ func (r *Retryer) Do(ctx context.Context, fn func() (*http.Response, error)) (*h
 
 		resp, lastErr = fn()
 		if lastErr != nil {
+			consecutiveErrors++
+			if consecutiveErrors > r.cfg.MaxErrorAttempts {
+				return nil, errors.New("max retry attempts exceeded: " + lastErr.Error())
+			}
 			continue
+		}
+		consecutiveErrors = 0
+
+		if resp == nil {
+			return nil, errors.New("nil response received")
 		}
 
 		if r.ShouldRetry(resp.StatusCode) {

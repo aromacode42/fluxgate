@@ -15,6 +15,10 @@ func sseTranslate(src io.Reader, dst io.Writer, entryFormat, backendFormat, mode
 		adapter.OpenAIToAnthropicSSE(src, dst, model)
 	case entryFormat == "openai" && backendFormat == "anthropic":
 		adapter.AnthropicToOpenAISSE(src, dst, model)
+	case entryFormat == "gemini" && backendFormat == "openai":
+		adapter.GeminiToOpenAISSE(src, dst, model)
+	case entryFormat == "openai" && backendFormat == "gemini":
+		adapter.OpenAIToGeminiSSE(src, dst, model)
 	default:
 		// Fallback to passthrough if formats match or are unknown
 		ssePassthrough(src, dst)

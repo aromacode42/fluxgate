@@ -95,19 +95,24 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body.Close()
 
+	// Validate JSON body
+	if !json.Valid(body) {
+		writeError(w, http.StatusBadRequest, "invalid JSON request body")
+		return
+	}
+
 	// Detect what format the client expects (entry format)
 	entryFormat := g.detectEntryFormat(r.URL.Path)
 	model := extractModel(body)
 
 	// Gateway-level retry: keep retrying while the client is still connected.
-	// gateway_retry_max = 0 means retry indefinitely until client disconnects.
 	maxAttempts := g.config.GatewayRetryMax
 	if maxAttempts <= 0 {
-		maxAttempts = -1 // infinite
+		maxAttempts = 3 // default
 	}
 
 	var lastErr error
-	for attempt := 0; maxAttempts < 0 || attempt < maxAttempts; attempt++ {
+	for attempt := 0; attempt < maxAttempts; attempt++ {
 		if err := r.Context().Err(); err != nil {
 			g.logger.Debug("client disconnected, stopping retry", "path", r.URL.Path)
 			return
@@ -197,6 +202,9 @@ func (g *Gateway) detectEntryFormat(path string) string {
 	}
 	if strings.HasPrefix(path, "/anthropic/") {
 		return "anthropic"
+	}
+	if strings.HasPrefix(path, "/gemini/") {
+		return "gemini"
 	}
 	return "openai"
 }
@@ -371,13 +379,13 @@ func (g *Gateway) sendToProvider(
 	p *provider.Provider,
 	backendFormat string,
 ) (*http.Response, error) {
-	transport, err := g.proxyRegistry.Get(p.ProxyName)
+	client, cb, err := g.proxyRegistry.Get(p.ProxyName)
 	if err != nil {
-		return nil, fmt.Errorf("resolving proxy %q: %w", p.ProxyName, err)
-	}
-	client := &http.Client{
-		Transport: transport,
-		Timeout:   g.config.RequestTimeout,
+		// Circuit breaker is open
+		if cb != nil {
+			cb.RecordFailure()
+		}
+		return nil, fmt.Errorf("proxy error: %w", err)
 	}
 
 	targetURL := g.buildTargetURL(p, r.URL.Path, backendFormat)
@@ -404,7 +412,20 @@ func (g *Gateway) sendToProvider(
 		"proxy", p.ProxyName,
 		"target", targetURL)
 
-	return g.doRequestWithAuthFallback(ctx, client, req, body, p)
+	resp, err := g.doRequestWithAuthFallback(ctx, client, req, body, p)
+	if err != nil {
+		if cb != nil {
+			cb.RecordFailure()
+		}
+		return nil, err
+	}
+
+	// Record success in circuit breaker
+	if cb != nil && resp.StatusCode < 500 {
+		cb.RecordSuccess()
+	}
+
+	return resp, nil
 }
 
 func (g *Gateway) doRequestWithAuthFallback(ctx context.Context, client *http.Client, req *http.Request, body []byte, p *provider.Provider) (*http.Response, error) {
@@ -437,6 +458,24 @@ func (g *Gateway) translateRequest(body []byte, from, to string) ([]byte, error)
 		return adapter.AnthropicToOpenAI(body)
 	case from == "openai" && to == "anthropic":
 		return adapter.OpenAIToAnthropic(body)
+	case from == "gemini" && to == "openai":
+		return adapter.GeminiToOpenAI(body, "")
+	case from == "openai" && to == "gemini":
+		return adapter.OpenAIToGemini(body)
+	case from == "anthropic" && to == "gemini":
+		// First convert Anthropic to OpenAI, then OpenAI to Gemini
+		openAIBody, err := adapter.AnthropicToOpenAI(body)
+		if err != nil {
+			return nil, err
+		}
+		return adapter.OpenAIToGemini(openAIBody)
+	case from == "gemini" && to == "anthropic":
+		// First convert Gemini to OpenAI, then OpenAI to Anthropic
+		openAIBody, err := adapter.GeminiToOpenAI(body, "")
+		if err != nil {
+			return nil, err
+		}
+		return adapter.OpenAIToAnthropic(openAIBody)
 	default:
 		return body, nil
 	}
@@ -452,8 +491,20 @@ func (g *Gateway) buildTargetURL(p *provider.Provider, path string, backendForma
 	if strings.HasPrefix(path, "/openai/") {
 		cleanPath = "/" + strings.TrimPrefix(path, "/openai/")
 	}
+	if strings.HasPrefix(path, "/gemini/") {
+		cleanPath = "/" + strings.TrimPrefix(path, "/gemini/")
+	}
 
-	// Ensure /v1/ prefix for both formats
+	// For Gemini, use different path structure
+	if backendFormat == "gemini" {
+		// Gemini API uses /v1beta/models/{model}:generateContent
+		if !strings.Contains(cleanPath, "/models/") {
+			// Already has model in path
+		}
+		return strings.TrimRight(p.BaseURL, "/") + cleanPath
+	}
+
+	// Ensure /v1/ prefix for OpenAI/Anthropic formats
 	if !strings.HasPrefix(cleanPath, "/v1/") {
 		cleanPath = "/v1" + cleanPath
 	}
@@ -463,7 +514,7 @@ func (g *Gateway) buildTargetURL(p *provider.Provider, path string, backendForma
 
 func (g *Gateway) setAuthHeader(req *http.Request, p *provider.Provider, key string) {
 	switch p.Type {
-	case "openai":
+	case "openai", "gemini":
 		req.Header.Set("Authorization", "Bearer "+key)
 	case "anthropic":
 		req.Header.Set("x-api-key", key)
@@ -476,7 +527,8 @@ func (g *Gateway) HealthCheck(ctx context.Context) {
 		if p.Disabled {
 			continue
 		}
-		err := p.CheckHealth(ctx, g.config.HealthTimeout)
+		transport := g.proxyRegistry.GetTransport(p.ProxyName)
+		err := p.CheckHealth(ctx, g.config.HealthTimeout, transport)
 		if err != nil {
 			g.logger.Warn("health check failed", "provider", p.Name, "error", err)
 		} else {

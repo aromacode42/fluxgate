@@ -27,6 +27,7 @@ type Server struct {
 	gateway      *gateway.Gateway
 	registry     *provider.Registry
 	modelRouter  *modelrouter.Router
+	proxyRegistry *proxy.Registry
 	logger       *slog.Logger
 	healthCtx    context.Context
 	healthCancel context.CancelFunc
@@ -41,19 +42,31 @@ func New(cfg *pkgconfig.Config) (*Server, error) {
 	var proxyConfigs []proxy.Config
 	for _, pc := range cfg.Proxies {
 		proxyConfigs = append(proxyConfigs, proxy.Config{
-			Name:     pc.Name,
-			Type:     pc.Type,
-			Address:  pc.Address,
-			Username: pc.Username,
-			Password: pc.Password,
+			Name:            pc.Name,
+			Type:            pc.Type,
+			Address:         pc.Address,
+			Username:        pc.Username,
+			Password:        pc.Password,
+			MaxIdleConns:    pc.MaxIdleConns,
+			MaxConnsPerHost: pc.MaxConnsPerHost,
+			IdleConnTimeout: pc.IdleConnTimeout,
 		})
 	}
-	proxyRegistry := proxy.NewRegistry(proxyConfigs)
+	cbConfig := proxy.CircuitBreakerConfig{
+		FailureThreshold: 5,
+		RecoveryTimeout:  30 * time.Second,
+		HalfOpenMax:     3,
+	}
+	proxyRegistry := proxy.NewRegistry(proxyConfigs, cbConfig)
 
 	// Build provider registry
 	registry := provider.NewRegistry()
 	for _, pc := range cfg.Providers {
-		p := provider.New(pc.Name, pc.Type, pc.BaseURL, pc.APIKeys, pc.Weight)
+		providerType := pc.Type
+		if providerType == "" {
+			providerType = provider.DetectProviderType(pc.BaseURL)
+		}
+		p := provider.New(pc.Name, providerType, pc.BaseURL, pc.APIKeys, pc.Weight)
 		p.ProxyName = pc.Proxy
 		p.Models = pc.Models
 		p.Disabled = pc.Disabled
@@ -83,11 +96,12 @@ func New(cfg *pkgconfig.Config) (*Server, error) {
 	gw := gateway.New(registry, bal, lim, cfg.Gateway, proxyRegistry, modelRouter)
 
 	s := &Server{
-		cfg:         cfg,
-		gateway:     gw,
-		registry:    registry,
-		modelRouter: modelRouter,
-		logger:      logger,
+		cfg:           cfg,
+		gateway:       gw,
+		registry:      registry,
+		modelRouter:   modelRouter,
+		proxyRegistry: proxyRegistry,
+		logger:        logger,
 	}
 
 	mux := http.NewServeMux()
@@ -152,6 +166,11 @@ func (s *Server) Start() error {
 
 	if err := s.server.Shutdown(ctx); err != nil {
 		return fmt.Errorf("server shutdown error: %w", err)
+	}
+
+	// Close proxy connections
+	if s.proxyRegistry != nil {
+		s.proxyRegistry.Close()
 	}
 
 	s.logger.Info("server stopped")

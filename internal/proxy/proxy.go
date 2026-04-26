@@ -7,28 +7,48 @@ import (
 	"net/http"
 	"net/url"
 	"sync"
+	"time"
 
 	"golang.org/x/net/proxy"
 )
 
 type Config struct {
-	Name     string
-	Type     string // "http" or "socks5"
-	Address  string
-	Username string
-	Password string
+	Name            string
+	Type            string // "http", "https", or "socks5"
+	Address         string
+	Username        string
+	Password        string
+	MaxIdleConns    int
+	MaxConnsPerHost int
+	IdleConnTimeout time.Duration
 }
 
-// Registry holds named proxy configs with cached transports.
+// TransportConfig holds default transport tuning parameters.
+type TransportConfig struct {
+	MaxIdleConns        int
+	MaxIdleConnsPerHost int
+	IdleConnTimeout     time.Duration
+}
+
+// Default transport config with sensible production values.
+var DefaultTransportConfig = TransportConfig{
+	MaxIdleConns:        100,
+	MaxIdleConnsPerHost: 10,
+	IdleConnTimeout:     90 * time.Second,
+}
+
+// Registry holds named proxy configs with cached HTTP clients.
 type Registry struct {
 	configs   map[string]Config
-	transport sync.Map // name -> *http.Transport
+	clients   sync.Map // name -> *http.Client
+	cbRegistry *CircuitBreakerRegistry
 }
 
 // NewRegistry creates a registry from a list of proxy configs.
-func NewRegistry(configs []Config) *Registry {
+func NewRegistry(configs []Config, cbConfig CircuitBreakerConfig) *Registry {
 	r := &Registry{
-		configs: make(map[string]Config),
+		configs:   make(map[string]Config),
+		cbRegistry: NewCircuitBreakerRegistry(cbConfig),
 	}
 	for _, cfg := range configs {
 		r.configs[cfg.Name] = cfg
@@ -36,44 +56,123 @@ func NewRegistry(configs []Config) *Registry {
 	return r
 }
 
-// Get returns the cached transport for the named proxy, or a direct transport if name is empty.
-func (r *Registry) Get(name string) (*http.Transport, error) {
+// Get returns the cached *http.Client for the named proxy, or a direct client if name is empty.
+// Returns the client and circuit breaker for the proxy.
+func (r *Registry) Get(name string) (*http.Client, *CircuitBreaker, error) {
+	// Direct connection (no proxy)
 	if name == "" {
-		// Direct connection (no proxy)
-		return http.DefaultTransport.(*http.Transport).Clone(), nil
+		return r.getDirectClient(), nil, nil
+	}
+
+	cb := r.cbRegistry.Get(name)
+
+	// Check circuit breaker
+	if !cb.Allow() {
+		return nil, cb, fmt.Errorf("circuit breaker open for proxy %q", name)
 	}
 
 	// Check cache first
-	if cached, ok := r.transport.Load(name); ok {
-		return cached.(*http.Transport), nil
+	if cached, ok := r.clients.Load(name); ok {
+		return cached.(*http.Client), cb, nil
 	}
 
 	cfg, found := r.configs[name]
 	if !found {
-		return nil, fmt.Errorf("proxy %q not found", name)
+		return nil, cb, fmt.Errorf("proxy %q not found", name)
 	}
 
+	client, err := newClient(cfg)
+	if err != nil {
+		cb.RecordFailure()
+		return nil, cb, fmt.Errorf("creating proxy client: %w", err)
+	}
+
+	// Cache it
+	r.clients.Store(name, client)
+	return client, cb, nil
+}
+
+// GetTransport returns the *http.Transport for the named proxy.
+// Used for health checks which need direct transport access.
+func (r *Registry) GetTransport(name string) *http.Transport {
+	// Direct connection - return default transport
+	if name == "" {
+		return newDirectTransport(DefaultTransportConfig)
+	}
+
+	cfg, found := r.configs[name]
+	if !found {
+		return nil
+	}
+
+	transport, err := newTransport(cfg)
+	if err != nil {
+		return nil
+	}
+	return transport
+}
+
+// getDirectClient returns a shared client for direct connections.
+func (r *Registry) getDirectClient() *http.Client {
+	if cached, ok := r.clients.Load(""); ok {
+		return cached.(*http.Client)
+	}
+	client := &http.Client{
+		Transport: newDirectTransport(DefaultTransportConfig),
+	}
+	r.clients.Store("", client)
+	return client
+}
+
+// Close closes all cached clients and their idle connections.
+func (r *Registry) Close() error {
+	var errs []error
+	r.clients.Range(func(key, value any) bool {
+		if client, ok := value.(*http.Client); ok {
+			client.CloseIdleConnections()
+		}
+		return true
+	})
+	r.clients = sync.Map{}
+	return nil
+}
+
+// newClient creates a new http.Client for the given proxy config.
+func newClient(cfg Config) (*http.Client, error) {
 	transport, err := newTransport(cfg)
 	if err != nil {
 		return nil, err
 	}
 
-	// Cache it
-	r.transport.Store(name, transport)
-	return transport, nil
+	tc := getTransportConfig(cfg)
+	applyTransportConfig(transport, tc)
+
+	return &http.Client{
+		Transport: transport,
+		Timeout:   0, // Timeout is managed by the gateway
+	}, nil
+}
+
+// newDirectTransport creates a transport for direct connections.
+func newDirectTransport(tc TransportConfig) *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	applyTransportConfig(t, tc)
+	return t
 }
 
 // newTransport creates a new http.Transport for the given proxy config.
 func newTransport(cfg Config) (*http.Transport, error) {
+	tc := getTransportConfig(cfg)
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	applyTransportConfig(transport, tc)
+
 	switch cfg.Type {
 	case "http", "https":
 		proxyURL, err := buildProxyURL(cfg)
 		if err != nil {
 			return nil, fmt.Errorf("building proxy URL: %w", err)
 		}
-		transport := http.DefaultTransport.(*http.Transport).Clone()
 		transport.Proxy = http.ProxyURL(proxyURL)
-		return transport, nil
 
 	case "socks5":
 		dialer, err := proxy.SOCKS5("tcp", cfg.Address, &proxy.Auth{
@@ -84,14 +183,42 @@ func newTransport(cfg Config) (*http.Transport, error) {
 			return nil, fmt.Errorf("creating SOCKS5 dialer: %w", err)
 		}
 
-		transport := http.DefaultTransport.(*http.Transport).Clone()
-		transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return dialer.Dial(network, addr)
-		}
-		return transport, nil
+		// Wrap with context-aware dialer
+		transport.DialContext = makeSOCKS5DialContext(dialer, cfg.Address)
 
 	default:
 		return nil, fmt.Errorf("unsupported proxy type: %s", cfg.Type)
+	}
+
+	return transport, nil
+}
+
+// makeSOCKS5DialContext creates a context-aware DialContext for SOCKS5.
+func makeSOCKS5DialContext(dialer proxy.Dialer, proxyAddr string) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		// Check context deadline before dialing
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		// Create a channel to receive the connection
+		type connResult struct {
+			conn net.Conn
+			err  error
+		}
+		resultCh := make(chan connResult, 1)
+
+		go func() {
+			conn, err := dialer.Dial(network, addr)
+			resultCh <- connResult{conn, err}
+		}()
+
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case result := <-resultCh:
+			return result.conn, result.err
+		}
 	}
 }
 
@@ -104,4 +231,30 @@ func buildProxyURL(cfg Config) (*url.URL, error) {
 		u.User = url.UserPassword(cfg.Username, cfg.Password)
 	}
 	return u, nil
+}
+
+func getTransportConfig(cfg Config) TransportConfig {
+	tc := DefaultTransportConfig
+	if cfg.MaxIdleConns > 0 {
+		tc.MaxIdleConns = cfg.MaxIdleConns
+	}
+	if cfg.MaxConnsPerHost > 0 {
+		tc.MaxIdleConnsPerHost = cfg.MaxConnsPerHost
+	}
+	if cfg.IdleConnTimeout > 0 {
+		tc.IdleConnTimeout = cfg.IdleConnTimeout
+	}
+	return tc
+}
+
+func applyTransportConfig(t *http.Transport, tc TransportConfig) {
+	if tc.MaxIdleConns > 0 {
+		t.MaxIdleConns = tc.MaxIdleConns
+	}
+	if tc.MaxIdleConnsPerHost > 0 {
+		t.MaxIdleConnsPerHost = tc.MaxIdleConnsPerHost
+	}
+	if tc.IdleConnTimeout > 0 {
+		t.IdleConnTimeout = tc.IdleConnTimeout
+	}
 }

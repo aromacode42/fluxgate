@@ -27,11 +27,11 @@ type ServerConfig struct {
 
 type ProviderConfig struct {
 	Name     string   `yaml:"name"`
-	Type     string   `yaml:"type"`
+	Type     string   `yaml:"type"` // auto-detected from base_url if empty
 	BaseURL  string   `yaml:"base_url"`
 	APIKeys  []string `yaml:"api_keys"`
 	Proxy    string   `yaml:"proxy"`
-	Models   []string `yaml:"models"`
+	Models   []string `yaml:"models"` // auto-discovered if empty
 	Weight   int      `yaml:"weight"`
 	Disabled bool     `yaml:"disabled"`
 }
@@ -57,11 +57,14 @@ type GatewayConfig struct {
 }
 
 type ProxyConfig struct {
-	Name     string `yaml:"name"`
-	Type     string `yaml:"type"`
-	Address  string `yaml:"address"`
-	Username string `yaml:"username"`
-	Password string `yaml:"password"`
+	Name            string        `yaml:"name"`
+	Type            string        `yaml:"type"`
+	Address         string        `yaml:"address"`
+	Username        string        `yaml:"username"`
+	Password        string        `yaml:"password"`
+	MaxIdleConns    int           `yaml:"max_idle_conns"`
+	MaxConnsPerHost int           `yaml:"max_conns_per_host"`
+	IdleConnTimeout time.Duration `yaml:"idle_conn_timeout"`
 }
 
 func DefaultConfig() *Config {
@@ -78,7 +81,7 @@ func DefaultConfig() *Config {
 			RetryMax:        5,
 			RetryWaitMin:    500 * time.Millisecond,
 			RetryWaitMax:    5 * time.Second,
-			GatewayRetryMax: 0,
+			GatewayRetryMax: 3,
 			HealthCheck:     true,
 			HealthInterval:  30 * time.Second,
 			HealthTimeout:   5 * time.Second,
