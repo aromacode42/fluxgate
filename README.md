@@ -104,6 +104,7 @@ go test -v ./tests/e2e/e2e_test.go
 
 ```
 cmd/server/            # Entry point
+docs/                  # LLM API documentation archive
 internal/
   gateway/             # HTTP routing, model routing, failover
   modelrouter/         # Model routing table, backend resolution
