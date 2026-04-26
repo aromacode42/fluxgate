@@ -59,7 +59,7 @@ func NewCircuitBreaker(name string, failureThreshold int, recoveryTimeout time.D
 
 // Allow checks if a request should be allowed through the circuit.
 func (cb *CircuitBreaker) Allow() bool {
-	switch atomic.LoadInt32(&cb.state) {
+	switch CircuitState(cb.state.Load()) {
 	case CircuitClosed:
 		return true
 	case CircuitHalfOpen:
@@ -88,7 +88,7 @@ func (cb *CircuitBreaker) Allow() bool {
 
 // RecordSuccess records a successful request.
 func (cb *CircuitBreaker) RecordSuccess() {
-	switch atomic.LoadInt32(&cb.state) {
+	switch CircuitState(cb.state.Load()) {
 	case CircuitClosed:
 		cb.failureCount.Store(0)
 	case CircuitHalfOpen:
@@ -102,7 +102,7 @@ func (cb *CircuitBreaker) RecordSuccess() {
 func (cb *CircuitBreaker) RecordFailure() {
 	cb.lastFailureTime.Store(time.Now().UnixNano())
 
-	switch atomic.LoadInt32(&cb.state) {
+	switch CircuitState(cb.state.Load()) {
 	case CircuitClosed:
 		if cb.failureCount.Add(1) >= int64(cb.failureThreshold) {
 			cb.transitionToOpen()
@@ -118,18 +118,18 @@ func (cb *CircuitBreaker) State() CircuitState {
 }
 
 func (cb *CircuitBreaker) transitionToOpen() {
-	atomic.StoreInt32(&cb.state, int32(CircuitOpen))
+	cb.state.Store(int32(CircuitOpen))
 	cb.halfOpenAttempts.Store(0)
 }
 
 func (cb *CircuitBreaker) transitionToHalfOpen() {
-	atomic.StoreInt32(&cb.state, int32(CircuitHalfOpen))
+	cb.state.Store(int32(CircuitHalfOpen))
 	cb.halfOpenAttempts.Store(0)
 	cb.successCount.Store(0)
 }
 
 func (cb *CircuitBreaker) transitionToClosed() {
-	atomic.StoreInt32(&cb.state, int32(CircuitClosed))
+	cb.state.Store(int32(CircuitClosed))
 	cb.failureCount.Store(0)
 	cb.successCount.Store(0)
 	cb.halfOpenAttempts.Store(0)

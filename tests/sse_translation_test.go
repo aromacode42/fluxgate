@@ -43,7 +43,7 @@ func TestIntegration_SSETranslation_OpenAIToAnthropic(t *testing.T) {
 	cfg := defaultGatewayConfig()
 	gw := gateway.New(
 		registry, balancer.NewRoundRobin(), limiter.NewRateLimiter(1000, 2000),
-		cfg, proxy.NewRegistry(nil), modelRouter,
+		cfg, proxy.NewRegistry(nil, proxy.CircuitBreakerConfig{}), modelRouter,
 	)
 
 	// Client sends Anthropic format request
@@ -80,7 +80,7 @@ func TestIntegration_SSEPassthrough_SameFormat(t *testing.T) {
 	cfg := defaultGatewayConfig()
 	gw := gateway.New(
 		registry, balancer.NewRoundRobin(), limiter.NewRateLimiter(1000, 2000),
-		cfg, proxy.NewRegistry(nil), nil,
+		cfg, proxy.NewRegistry(nil, proxy.CircuitBreakerConfig{}), nil,
 	)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
@@ -121,7 +121,7 @@ func TestIntegration_GatewayRetry_TimeoutThenSuccess(t *testing.T) {
 
 	gw := gateway.New(
 		registry, balancer.NewRoundRobin(), limiter.NewRateLimiter(1000, 2000),
-		cfg, proxy.NewRegistry(nil), nil,
+		cfg, proxy.NewRegistry(nil, proxy.CircuitBreakerConfig{}), nil,
 	)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/test",
@@ -147,7 +147,7 @@ func TestIntegration_RateLimiting_UnderLoad(t *testing.T) {
 	cfg := defaultGatewayConfig()
 	gw := gateway.New(
 		registry, balancer.NewRoundRobin(), limiter.NewRateLimiter(10, 20),
-		cfg, proxy.NewRegistry(nil), nil,
+		cfg, proxy.NewRegistry(nil, proxy.CircuitBreakerConfig{}), nil,
 	)
 
 	var success, rateLimited int
@@ -182,7 +182,7 @@ func TestIntegration_MultiKeyRotation(t *testing.T) {
 	cfg := defaultGatewayConfig()
 	gw := gateway.New(
 		registry, balancer.NewRoundRobin(), limiter.NewRateLimiter(1000, 2000),
-		cfg, proxy.NewRegistry(nil), nil,
+		cfg, proxy.NewRegistry(nil, proxy.CircuitBreakerConfig{}), nil,
 	)
 
 	for i := 0; i < 4; i++ {
@@ -219,7 +219,7 @@ func TestIntegration_ModelRewrite(t *testing.T) {
 	cfg := defaultGatewayConfig()
 	gw := gateway.New(
 		registry, balancer.NewRoundRobin(), limiter.NewRateLimiter(1000, 2000),
-		cfg, proxy.NewRegistry(nil), modelRouter,
+		cfg, proxy.NewRegistry(nil, proxy.CircuitBreakerConfig{}), modelRouter,
 	)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",

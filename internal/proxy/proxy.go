@@ -58,10 +58,11 @@ func NewRegistry(configs []Config, cbConfig CircuitBreakerConfig) *Registry {
 
 // Get returns the cached *http.Client for the named proxy, or a direct client if name is empty.
 // Returns the client and circuit breaker for the proxy.
-func (r *Registry) Get(name string) (*http.Client, *CircuitBreaker, error) {
+// timeout is applied to direct connections.
+func (r *Registry) Get(name string, timeout time.Duration) (*http.Client, *CircuitBreaker, error) {
 	// Direct connection (no proxy)
 	if name == "" {
-		return r.getDirectClient(), nil, nil
+		return r.getDirectClient(timeout), nil, nil
 	}
 
 	cb := r.cbRegistry.Get(name)
@@ -112,21 +113,24 @@ func (r *Registry) GetTransport(name string) *http.Transport {
 	return transport
 }
 
-// getDirectClient returns a shared client for direct connections.
-func (r *Registry) getDirectClient() *http.Client {
-	if cached, ok := r.clients.Load(""); ok {
-		return cached.(*http.Client)
+// getDirectClient returns a fresh client for direct connections with optional timeout.
+func (r *Registry) getDirectClient(timeout time.Duration) *http.Client {
+	dialer := &net.Dialer{}
+	t := &http.Transport{
+		MaxIdleConns:          DefaultTransportConfig.MaxIdleConns,
+		MaxIdleConnsPerHost:   DefaultTransportConfig.MaxIdleConnsPerHost,
+		IdleConnTimeout:       DefaultTransportConfig.IdleConnTimeout,
+		DialContext:           dialer.DialContext,
+		ResponseHeaderTimeout: timeout,
 	}
-	client := &http.Client{
-		Transport: newDirectTransport(DefaultTransportConfig),
+	return &http.Client{
+		Transport: t,
+		Timeout:   timeout,
 	}
-	r.clients.Store("", client)
-	return client
 }
 
 // Close closes all cached clients and their idle connections.
-func (r *Registry) Close() error {
-	var errs []error
+func (r *Registry) Close() {
 	r.clients.Range(func(key, value any) bool {
 		if client, ok := value.(*http.Client); ok {
 			client.CloseIdleConnections()
@@ -134,7 +138,6 @@ func (r *Registry) Close() error {
 		return true
 	})
 	r.clients = sync.Map{}
-	return nil
 }
 
 // newClient creates a new http.Client for the given proxy config.
@@ -156,6 +159,7 @@ func newClient(cfg Config) (*http.Client, error) {
 // newDirectTransport creates a transport for direct connections.
 func newDirectTransport(tc TransportConfig) *http.Transport {
 	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.DialContext = (&net.Dialer{}).DialContext // Respect context deadline
 	applyTransportConfig(t, tc)
 	return t
 }

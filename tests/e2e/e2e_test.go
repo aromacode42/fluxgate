@@ -65,7 +65,7 @@ func TestE2E_ServerStartup(t *testing.T) {
 		balancer.NewRoundRobin(),
 		limiter.NewRateLimiter(100, 200),
 		gwCfg,
-		proxy.NewRegistry(nil),
+		proxy.NewRegistry(nil, proxy.CircuitBreakerConfig{}),
 		nil,
 	)
 

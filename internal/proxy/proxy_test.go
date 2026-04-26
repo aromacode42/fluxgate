@@ -8,15 +8,16 @@ import (
 )
 
 func TestRegistry_EmptyName(t *testing.T) {
-	r := NewRegistry(nil)
-	tr, err := r.Get("")
+	r := NewRegistry(nil, CircuitBreakerConfig{})
+	client, cb, err := r.Get("", 0)
 	assert.NoError(t, err)
-	assert.NotNil(t, tr)
+	assert.NotNil(t, client)
+	assert.Nil(t, cb)
 }
 
 func TestRegistry_NotFound(t *testing.T) {
-	r := NewRegistry(nil)
-	_, err := r.Get("nonexistent")
+	r := NewRegistry(nil, CircuitBreakerConfig{})
+	_, _, err := r.Get("nonexistent", 0)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "not found")
 }
@@ -24,24 +25,24 @@ func TestRegistry_NotFound(t *testing.T) {
 func TestRegistry_CacheHit(t *testing.T) {
 	r := NewRegistry([]Config{
 		{Name: "test", Type: "http", Address: "http://127.0.0.1:7890"},
-	})
+	}, CircuitBreakerConfig{})
 
-	tr1, err := r.Get("test")
+	client1, _, err := r.Get("test", 0)
 	assert.NoError(t, err)
 
-	tr2, err := r.Get("test")
+	client2, _, err := r.Get("test", 0)
 	assert.NoError(t, err)
 
-	// Same cached transport
-	assert.Same(t, tr1, tr2)
+	// Same cached client
+	assert.Same(t, client1, client2)
 }
 
 func TestNewTransport_Empty(t *testing.T) {
 	// Direct connection when type is empty
-	r := NewRegistry([]Config{})
-	tr, err := r.Get("")
+	r := NewRegistry([]Config{}, CircuitBreakerConfig{})
+	client, _, err := r.Get("", 0)
 	assert.NoError(t, err)
-	assert.NotNil(t, tr)
+	assert.NotNil(t, client)
 }
 
 func TestNewTransport_UnsupportedType(t *testing.T) {
@@ -95,34 +96,34 @@ func TestRegistry_MultipleProxies(t *testing.T) {
 	r := NewRegistry([]Config{
 		{Name: "us-http", Type: "http", Address: "http://us.proxy:7890"},
 		{Name: "jp-socks", Type: "socks5", Address: "jp.proxy:1080"},
-	})
+	}, CircuitBreakerConfig{})
 
-	tr1, err := r.Get("us-http")
+	client1, _, err := r.Get("us-http", 0)
 	assert.NoError(t, err)
-	assert.NotNil(t, tr1)
+	assert.NotNil(t, client1)
 
-	tr2, err := r.Get("jp-socks")
+	client2, _, err := r.Get("jp-socks", 0)
 	assert.NoError(t, err)
-	assert.NotNil(t, tr2)
+	assert.NotNil(t, client2)
 
-	// Different transports for different proxies
-	assert.NotSame(t, tr1, tr2)
+	// Different clients for different proxies
+	assert.NotSame(t, client1, client2)
 }
 
 func TestRegistry_Get_EmptyThenCached(t *testing.T) {
 	r := NewRegistry([]Config{
 		{Name: "test", Type: "http", Address: "http://127.0.0.1:7890"},
-	})
+	}, CircuitBreakerConfig{})
 
-	// Get direct (empty name) — should return a clone each time
-	tr1, _ := r.Get("")
-	tr2, _ := r.Get("")
-	assert.NotSame(t, tr1, tr2) // direct connections are cloned, not cached
+	// Get direct (empty name) — fresh client each time
+	client1, _, _ := r.Get("", 0)
+	client2, _, _ := r.Get("", 0)
+	assert.NotSame(t, client1, client2) // fresh client for direct connections
 
 	// Named proxy is cached
-	tr3, _ := r.Get("test")
-	tr4, _ := r.Get("test")
-	assert.Same(t, tr3, tr4)
+	client3, _, _ := r.Get("test", 0)
+	client4, _, _ := r.Get("test", 0)
+	assert.Same(t, client3, client4)
 }
 
 // Compile-time interface check

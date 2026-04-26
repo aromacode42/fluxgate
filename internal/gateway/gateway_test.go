@@ -44,7 +44,7 @@ func setupGateway(upstream http.Handler) (*Gateway, *httptest.Server) {
 		balancer.NewRoundRobin(),
 		limiter.NewRateLimiter(1000, 2000),
 		defaultGWConfig(),
-		proxy.NewRegistry(nil),
+		proxy.NewRegistry(nil, proxy.CircuitBreakerConfig{}),
 		nil,
 	)
 
@@ -124,7 +124,7 @@ func TestGateway_RateLimiting(t *testing.T) {
 
 	gw := New(
 		registry, balancer.NewRoundRobin(), limiter.NewRateLimiter(1, 2),
-		defaultGWConfig(), proxy.NewRegistry(nil), nil,
+		defaultGWConfig(), proxy.NewRegistry(nil, proxy.CircuitBreakerConfig{}), nil,
 	)
 
 	for i := 0; i < 5; i++ {
@@ -154,7 +154,7 @@ func TestGateway_NoHealthyProviders(t *testing.T) {
 
 	gw := New(
 		registry, balancer.NewRoundRobin(), limiter.NewRateLimiter(1000, 2000),
-		defaultGWConfig(), proxy.NewRegistry(nil), nil,
+		defaultGWConfig(), proxy.NewRegistry(nil, proxy.CircuitBreakerConfig{}), nil,
 	)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/test", strings.NewReader(`{"model":"x"}`))
@@ -242,7 +242,7 @@ func TestGateway_ModelRouting_BackendFailover(t *testing.T) {
 
 	gw := New(
 		registry, balancer.NewRoundRobin(), limiter.NewRateLimiter(1000, 2000),
-		defaultGWConfig(), proxy.NewRegistry(nil), modelRouter,
+		defaultGWConfig(), proxy.NewRegistry(nil, proxy.CircuitBreakerConfig{}), modelRouter,
 	)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
@@ -283,7 +283,7 @@ func TestGateway_ModelRouting_AllBackendsDown(t *testing.T) {
 
 	gw := New(
 		registry, balancer.NewRoundRobin(), limiter.NewRateLimiter(1000, 2000),
-		defaultGWConfig(), proxy.NewRegistry(nil), modelRouter,
+		defaultGWConfig(), proxy.NewRegistry(nil, proxy.CircuitBreakerConfig{}), modelRouter,
 	)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
@@ -318,7 +318,7 @@ func TestGateway_ModelRouting_ModelRewrite(t *testing.T) {
 
 	gw := New(
 		registry, balancer.NewRoundRobin(), limiter.NewRateLimiter(1000, 2000),
-		defaultGWConfig(), proxy.NewRegistry(nil), modelRouter,
+		defaultGWConfig(), proxy.NewRegistry(nil, proxy.CircuitBreakerConfig{}), modelRouter,
 	)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
@@ -454,7 +454,7 @@ func TestGateway_GatewayRetry_StopsOnClientDisconnect(t *testing.T) {
 
 	gw := New(
 		registry, balancer.NewRoundRobin(), limiter.NewRateLimiter(1000, 2000),
-		cfg, proxy.NewRegistry(nil), nil,
+		cfg, proxy.NewRegistry(nil, proxy.CircuitBreakerConfig{}), nil,
 	)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

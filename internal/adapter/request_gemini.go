@@ -1,7 +1,6 @@
 package adapter
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 )
@@ -180,7 +179,6 @@ func GeminiToOpenAI(body []byte, model string) ([]byte, error) {
 	choices := make([]map[string]interface{}, 0, len(geminiResp.Candidates))
 	for i, cand := range geminiResp.Candidates {
 		content := ""
-		finishReason := ""
 
 		if len(cand.Content.Parts) > 0 {
 			for _, part := range cand.Content.Parts {

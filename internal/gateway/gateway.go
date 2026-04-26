@@ -95,10 +95,18 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body.Close()
 
-	// Validate JSON body
-	if !json.Valid(body) {
+	// Validate JSON body only when Content-Type is JSON and body is non-empty
+	if len(body) > 0 && strings.Contains(r.Header.Get("Content-Type"), "application/json") && !json.Valid(body) {
 		writeError(w, http.StatusBadRequest, "invalid JSON request body")
 		return
+	}
+
+	// Apply request timeout to context
+	ctx := r.Context()
+	if g.config.RequestTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, g.config.RequestTimeout)
+		defer cancel()
 	}
 
 	// Detect what format the client expects (entry format)
@@ -113,7 +121,15 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	var lastErr error
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		if err := r.Context().Err(); err != nil {
+		// Create a fresh timeout context for each attempt (context can't be reused after cancellation)
+		attemptCtx := r.Context()
+		if g.config.RequestTimeout > 0 {
+			var cancel context.CancelFunc
+			attemptCtx, cancel = context.WithTimeout(attemptCtx, g.config.RequestTimeout)
+			defer cancel()
+		}
+
+		if err := attemptCtx.Err(); err != nil {
 			g.logger.Debug("client disconnected, stopping retry", "path", r.URL.Path)
 			return
 		}
@@ -127,13 +143,13 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"wait", wait,
 				"last_error", lastErr)
 			select {
-			case <-r.Context().Done():
+			case <-attemptCtx.Done():
 				return
 			case <-time.After(wait):
 			}
 		}
 
-		resp, backendFormat, err := g.forwardRequest(r.Context(), r, body, entryFormat)
+		resp, backendFormat, err := g.forwardRequest(attemptCtx, r, body, entryFormat)
 		if err != nil {
 			// If all backends returned HTTP errors (not network/timeout),
 			// retry a limited number of times then give up — the client
@@ -379,7 +395,7 @@ func (g *Gateway) sendToProvider(
 	p *provider.Provider,
 	backendFormat string,
 ) (*http.Response, error) {
-	client, cb, err := g.proxyRegistry.Get(p.ProxyName)
+	client, cb, err := g.proxyRegistry.Get(p.ProxyName, g.config.RequestTimeout)
 	if err != nil {
 		// Circuit breaker is open
 		if cb != nil {
