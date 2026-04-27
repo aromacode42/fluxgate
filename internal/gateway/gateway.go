@@ -458,8 +458,21 @@ func (g *Gateway) doRequestWithAuthFallback(ctx context.Context, client *http.Cl
 	// This handles providers like Longcat that expect Bearer instead of x-api-key
 	if resp.StatusCode == http.StatusUnauthorized && p.Type == "anthropic" {
 		resp.Body.Close()
-		req.Header.Set("Authorization", "Bearer "+key)
-		return client.Do(req)
+		// Create a fresh request because the body was consumed by the first Do()
+		newReq, err := http.NewRequestWithContext(ctx, req.Method, req.URL.String(), bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		// Copy headers from original request
+		for k, vs := range req.Header {
+			for _, v := range vs {
+				newReq.Header.Add(k, v)
+			}
+		}
+		// Override auth to Bearer token
+		newReq.Header.Set("Authorization", "Bearer "+key)
+		newReq.Header.Set("Content-Type", "application/json")
+		return client.Do(newReq)
 	}
 
 	return resp, nil
